@@ -1,0 +1,7 @@
+0 Background Noise
+1 Cat
+2 Chicken
+3 Cow
+4 Frog
+5 Mouse
+6 Seagull

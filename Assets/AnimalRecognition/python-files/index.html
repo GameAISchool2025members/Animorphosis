@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Animal Sound Recognition</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 0;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #label-container {
+            margin-top: 20px;
+        }
+        #label-container div {
+            padding: 10px;
+            margin: 5px 0;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            border-left: 4px solid #4CAF50;
+        }
+        .status {
+            color: #666;
+            font-style: italic;
+        }
+        .error {
+            color: red;
+            background-color: #ffe6e6;
+            padding: 10px;
+            border-radius: 5px;
+            border-left: 4px solid red;
+        }
+        .success {
+            color: green;
+            background-color: #e6ffe6;
+            padding: 10px;
+            border-radius: 5px;
+            border-left: 4px solid green;
+        }
+        .warning {
+            color: orange;
+            background-color: #fff3cd;
+            padding: 10px;
+            border-radius: 5px;
+            border-left: 4px solid orange;
+        }
+        .prediction-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #4CAF50;
+            margin-left: 10px;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Animal Sound Recognition</h1>
+        <p class="status">Click the button below to start listening for animal sounds.</p>
+        
+        <!-- UDP Configuration Form -->
+        <div style="margin: 20px 0; padding: 15px; background-color: #f8f9fa; border-radius: 5px; border: 1px solid #dee2e6;">
+            <h3>UDP Configuration</h3>
+            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <label for="udpHost">Host:</label>
+                <input type="text" id="udpHost" value="127.0.0.1" style="padding: 5px; border: 1px solid #ccc; border-radius: 3px;">
+                
+                <label for="udpPort">Port:</label>
+                <input type="number" id="udpPort" value="5005" style="padding: 5px; border: 1px solid #ccc; border-radius: 3px; width: 80px;">
+                
+                <label for="udpEnabled">
+                    <input type="checkbox" id="udpEnabled" checked> Enable UDP
+                </label>
+            </div>
+            <div style="margin-top: 10px;">
+                <small>UDP Status: <span id="udpStatus">Not connected</span></small>
+            </div>
+        </div>
+        
+        <button type="button" id="startButton" onclick="init()">Start Listening</button>
+        <button type="button" id="stopButton" onclick="stopListening()" disabled>Stop Listening</button>
+        <button type="button" id="testButton" onclick="testModel()" disabled>Test Model</button>
+        <button type="button" id="testUdpButton" onclick="testUDP()" disabled>Test UDP</button>
+        <div id="status"></div>
+        <div id="audio-level" style="margin: 10px 0; padding: 10px; background-color: #f0f0f0; border-radius: 5px; display: none;">
+            <strong>Audio Level:</strong> <span id="audio-level-value">0</span>
+            <div style="margin-top: 5px;">
+                <div id="audio-bar" style="width: 0%; height: 20px; background-color: #4CAF50; border-radius: 3px; transition: width 0.1s;"></div>
+            </div>
+        </div>
+        <div id="label-container"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.5.4/dist/speech-commands.min.js"></script>
+
+    <script type="text/javascript">
+        let model = null;
+        let isListening = false;
+        let classLabels = [];
+        let lastPredictionTime = 0;
+        const PREDICTION_THRESHOLD = 0.7; // Minimum confidence to send UDP message
+        const PREDICTION_COOLDOWN = 2000; // Minimum time between UDP messages (ms)
+
+        // Function to get the base URL from the current window location
+        function getBaseURL() {
+            return `${window.location.protocol}//${window.location.hostname}:${window.location.port}`;
+        }
+
+        const URL = `${getBaseURL()}/`; // Model files served from this server
+        const UDP_SERVER_URL = `${getBaseURL()}/udp`;
+
+        // Configure UDP target
+        async function configureUDP() {
+            try {
+                const host = document.getElementById('udpHost').value;
+                const port = document.getElementById('udpPort').value;
+                
+                const config = {
+                    type: 'config',
+                    host: host,
+                    port: parseInt(port)
+                };
+                
+                const response = await fetch(UDP_SERVER_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(config)
+                });
+                
+                const result = await response.json();
+                console.log("UDP configuration result:", result);
+                
+                if (result.status === 'success') {
+                    document.getElementById('udpStatus').textContent = 'Configured';
+                    document.getElementById('udpStatus').style.color = 'green';
+                } else {
+                    document.getElementById('udpStatus').textContent = 'Configuration failed';
+                    document.getElementById('udpStatus').style.color = 'red';
+                }
+                
+            } catch (error) {
+                console.error("Error configuring UDP:", error);
+                document.getElementById('udpStatus').textContent = 'Connection failed';
+                document.getElementById('udpStatus').style.color = 'red';
+            }
+        }
+
+        // Send UDP message via HTTP POST
+        async function sendUDPMessage(animalType, confidence) {
+            if (!document.getElementById('udpEnabled').checked) {
+                return;
+            }
+            
+            const currentTime = Date.now();
+            if (currentTime - lastPredictionTime < PREDICTION_COOLDOWN) {
+                return; // Still in cooldown period
+            }
+            
+            const message = {
+                type: 'udp_message',
+                animal: animalType,
+                confidence: confidence,
+                timestamp: new Date().toISOString()
+            };
+            
+            try {
+                const response = await fetch(UDP_SERVER_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(message)
+                });
+                
+                const result = await response.json();
+                console.log("UDP message result:", result);
+                
+                if (result.status === 'success') {
+                    lastPredictionTime = currentTime;
+                    document.getElementById('status').innerHTML = 
+                        `<div class="success">UDP message sent: ${animalType} (${(confidence * 100).toFixed(1)}%)</div>`;
+                } else {
+                    console.error("UDP message failed:", result.message);
+                }
+            } catch (error) {
+                console.error("Error sending UDP message:", error);
+            }
+        }
+
+        async function setupModel(URL, predictionCB) {
+            try {
+                // the model.json file stores a reference to the trained model
+                const modelURL = `${URL}model.json`;
+                // the metadata.json file contains the text labels of your model and additional information
+                const metadataURL = `${URL}metadata.json`;
+
+                console.log("Loading model from:", modelURL);
+                console.log("Loading metadata from:", metadataURL);
+
+                // Load the model using the speechCommands library
+                model = window.speechCommands.create('BROWSER_FFT', undefined, modelURL, metadataURL);
+                await model.ensureModelLoaded();
+
+                console.log("Model loaded successfully");
+                console.log("Model word labels:", model.wordLabels());
+
+                // this tells the model how to run when listening for audio
+                const modelParameters = {
+                    invokeCallbackOnNoiseAndUnknown: true, // run even when only background noise is detected
+                    includeSpectrogram: true, // give us access to numerical audio data
+                    overlapFactor: 0.5 // how often per second to sample audio, 0.5 means twice per second
+                };
+
+                model.listen(
+                    //This callback function is invoked each time the model has a prediction.
+                    prediction => {
+                        // prediction.scores contains the probability scores that correspond to model.wordLabels().
+                        console.log("Prediction received:", prediction);
+                        console.log("Scores:", prediction.scores);
+                        predictionCB(prediction.scores);
+                    },
+                    modelParameters
+                );
+
+                return model;
+            } catch (error) {
+                console.error("Error setting up model:", error);
+                throw error;
+            }
+        }
+
+        async function init() {
+            try {
+                document.getElementById('status').innerHTML = '<div class="status">Loading model...</div>';
+                document.getElementById('startButton').disabled = true;
+                
+                // Configure UDP target
+                await configureUDP();
+                
+                // Set up the model with prediction callback
+                await setupModel(URL, handlePrediction);
+                
+                // Get class labels from the model
+                classLabels = model.wordLabels();
+                console.log("Class labels:", classLabels);
+                
+                // Set up the label container
+                const labelContainer = document.getElementById("label-container");
+                labelContainer.innerHTML = "";
+                
+                for (let i = 0; i < classLabels.length; i++) {
+                    const div = document.createElement("div");
+                    div.innerHTML = classLabels[i] + ": 0.00";
+                    labelContainer.appendChild(div);
+                }
+
+                // Set listening state
+                isListening = true;
+                
+                document.getElementById('stopButton').disabled = false;
+                document.getElementById('testButton').disabled = false;
+                document.getElementById('testUdpButton').disabled = false;
+                document.getElementById('status').innerHTML = '<div class="success">Listening for animal sounds... <span class="prediction-indicator"></span></div>';
+
+            } catch (error) {
+                console.error("Error initializing:", error);
+                document.getElementById('status').innerHTML = 
+                    '<div class="error">Error: Could not load model. Make sure the model files are in the correct location.</div>';
+                document.getElementById('startButton').disabled = false;
+            }
+        }
+
+        function handlePrediction(scores) {
+            console.log("Handling prediction with scores:", scores);
+            
+            // Find the highest confidence prediction
+            let maxScore = 0;
+            let maxIndex = 0;
+            for (let i = 0; i < scores.length; i++) {
+                if (scores[i] > maxScore) {
+                    maxScore = scores[i];
+                    maxIndex = i;
+                }
+            }
+            
+            // Send UDP message if confidence is above threshold
+            if (maxScore >= PREDICTION_THRESHOLD) {
+                const animalType = classLabels[maxIndex];
+                sendUDPMessage(animalType, maxScore);
+            }
+            
+            // Update labels with prediction scores
+            for (let i = 0; i < classLabels.length && i < scores.length; i++) {
+                const classPrediction = classLabels[i] + ": " + scores[i].toFixed(2);
+                const labelDiv = document.getElementById("label-container").childNodes[i];
+                if (labelDiv) {
+                    labelDiv.innerHTML = classPrediction;
+                }
+            }
+            
+            // Update audio level display (simplified)
+            const audioLevelElement = document.getElementById('audio-level-value');
+            const audioLevelContainer = document.getElementById('audio-level');
+            const audioBar = document.getElementById('audio-bar');
+            if (audioLevelElement && audioLevelContainer && audioBar) {
+                // Calculate average score as audio level indicator
+                const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+                const audioLevel = avgScore * 100; // Convert to percentage
+                
+                audioLevelElement.textContent = audioLevel.toFixed(2);
+                audioLevelContainer.style.display = 'block';
+                
+                // Update visual bar (0-100%)
+                const barWidth = Math.min(audioLevel, 100);
+                audioBar.style.width = barWidth + '%';
+                
+                // Change color based on level
+                if (audioLevel > 50) {
+                    audioBar.style.backgroundColor = '#ff4444'; // Red for high levels
+                } else if (audioLevel > 20) {
+                    audioBar.style.backgroundColor = '#ffaa00'; // Orange for medium levels
+                } else {
+                    audioBar.style.backgroundColor = '#4CAF50'; // Green for low levels
+                }
+            }
+        }
+
+        function stopListening() {
+            if (isListening && model) {
+                isListening = false;
+                
+                // Stop the model from listening
+                model.stopListening();
+                
+                document.getElementById('startButton').disabled = false;
+                document.getElementById('stopButton').disabled = true;
+                document.getElementById('testButton').disabled = true;
+                document.getElementById('testUdpButton').disabled = true;
+                document.getElementById('status').innerHTML = '<div class="status">Stopped listening.</div>';
+            }
+        }
+
+        function testModel() {
+            if (!model) {
+                console.error("Model not loaded");
+                return;
+            }
+            
+            console.log("Testing model...");
+            
+            // Create dummy scores for testing
+            const dummyScores = new Array(classLabels.length).fill(0.1);
+            dummyScores[0] = 0.8; // Set first class to high probability
+            
+            console.log("Test scores:", dummyScores);
+            handlePrediction(dummyScores);
+            
+            document.getElementById('status').innerHTML = '<div class="success">Model test completed! Check console for results.</div>';
+        }
+
+        async function testUDP() {
+            console.log("Testing UDP connection...");
+            
+            const testMessage = {
+                type: 'udp_message',
+                animal: 'TEST_ANIMAL',
+                confidence: 0.95,
+                timestamp: new Date().toISOString()
+            };
+            
+            try {
+                const response = await fetch(UDP_SERVER_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(testMessage)
+                });
+                
+                const result = await response.json();
+                console.log("UDP test result:", result);
+                
+                if (result.status === 'success') {
+                    document.getElementById('status').innerHTML = '<div class="success">UDP test message sent!</div>';
+                } else {
+                    document.getElementById('status').innerHTML = '<div class="error">UDP test failed: ' + result.message + '</div>';
+                }
+            } catch (error) {
+                console.error("Error sending UDP test message:", error);
+                document.getElementById('status').innerHTML = '<div class="error">UDP test failed: ' + error.message + '</div>';
+            }
+        }
+    </script>
+</body>
+</html> 

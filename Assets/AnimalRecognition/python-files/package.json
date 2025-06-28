@@ -1,0 +1,26 @@
+{
+  "name": "animal-sound-recognizer",
+  "version": "1.0.0",
+  "description": "Animal sound recognition using TensorFlow.js in Node.js",
+  "type": "module",
+  "main": "animal_recognizer_node.js",
+  "scripts": {
+    "start": "node animal_recognizer_node.js start",
+    "test-model": "node animal_recognizer_node.js test-model",
+    "test-udp": "node animal_recognizer_node.js test-udp",
+    "configure-udp": "node animal_recognizer_node.js configure-udp",
+    "serve": "python run_recognizer.py"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  },
+  "keywords": [
+    "tensorflow",
+    "animal",
+    "sound",
+    "recognition",
+    "machine-learning"
+  ],
+  "author": "Animal Runner Team",
+  "license": "MIT"
+} 
